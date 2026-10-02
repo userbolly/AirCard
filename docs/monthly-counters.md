@@ -44,19 +44,29 @@ folder in the phone's automation. iCloud Drive must be enabled on both devices.
 
 ### 2. Create the phone automation
 
-On your iPhone, open **Shortcuts → Automation → + → Transaction**. Under **When
-I tap**, select only the card matching this AirCard counter. Choose **Run
-Immediately**. Add these actions:
+On iOS 27, create or edit a shortcut, open the action picker, then choose
+**Automation → Wallet**. Select only the card matching this AirCard counter.
+Expand the trigger and keep **Automation** on; **Notify** can stay off. In
+shortcut **Details → Privacy**, enable **Allow Running When Locked**.
+
+On earlier iOS versions, use **Shortcuts → Automation → + → Transaction**,
+select the matching card under **When I tap**, and choose **Run Immediately**.
+Add these actions:
 
 1. **Date**: use **Current Date**.
 2. **Format Date**: input the Date action's output, choose **Custom**, and enter
    `yyyy-MM-dd'T'HH:mm:ss.SSSXXX`. Include the quoted `T` and the timezone `XXX`.
 3. **Text**: paste the copied event template. Keep its identifier and `|`, but
    replace the literal `[Formatted Date]` with the **Formatted Date** variable
-   from step 2. There must be no spaces around the `|`.
-4. **Append to Text File**: append the Text action's output to **iCloud Drive →
-   Shortcuts → AirCard-Taps → events.txt**, with **Make New Line** enabled.
-   Set the destination now so the automation does not ask for a file on each run.
+   from step 2. Insert the variable directly after the `|`, with no spaces or
+   line break between them. A visual wrap is fine; pressing Return here is not.
+   Keep a newline after the date variable (press Return after it). The copied
+   template includes that newline; AirCard waits for it before consuming the event.
+4. **Append to Text File**: use the Text action's output. Select **iCloud Drive →
+   Shortcuts → AirCard-Taps** as the folder, enter **events.txt** in **File Path**,
+   and enable **Make New Line**. Choose the native Shortcuts folder with its app
+   icon; unrelated folders can have the same name. Select the destination now so
+   the automation does not ask for a folder on each run.
 
 The event line is an opaque per-card key, a `|`, and a timestamp. It contains no
 card number, bank credentials, purchase amount, or payment details.
@@ -87,6 +97,11 @@ physical payment trigger or recover events the phone never recorded.
 
 Each card has independent settings and a preview:
 
+- A Wallet number guide with four dots, matching the bottom-left position,
+  dot spacing, and system font in the supplied Wallet screenshots. Choose gray,
+  black, or white and enter the last four digits for each card. These preferences
+  stay on this Mac. Toggle it on or off; it appears only in the editor preview
+  and is never included in flashed artwork. Wallet supplies its real digits.
 - System, rounded, monospaced, or serif font; five weights; size and text color.
 - Bottom left, bottom right, top left, top right, or center anchor, with horizontal
   and vertical offsets.
@@ -118,12 +133,26 @@ way to reset a month: use count correction. Duplicate lines with the same card
 key and timestamp are counted once, including after app relaunch. The importer
 waits for a complete newline-terminated line before reading it.
 
+## Apple Watch
+
+This build applies artwork to the iPhone only. It has no Apple Watch artwork
+writer, and the phone's render-cache changes do not provide Watch skin syncing.
+Upstream users report that their Watch keeps the original artwork after a phone
+skin change in [issue 118](https://github.com/Mak5er/AirCard/issues/118).
+Watch support needs a separately verified implementation; enabling the shortcut's
+Show on Apple Watch setting only makes the shortcut available there.
+
 ## Troubleshooting
 
 - **Nothing counted:** check that the phone automation runs immediately, uses
   the correct card's event template, inserts the date variable, appends a newline,
   and writes to the same iCloud file that AirCard watches. Open the file in Files
   and confirm that a new line appears after a manual test.
+- **The file could not be opened:** select the AirCard-Taps folder directly in
+  Append to Text File, then use only events.txt for File Path.
+- **The file grows but the count stays at zero:** the key, `|`, and timestamp
+  must be on one physical line, followed by a newline. Check the custom date
+  format for extra punctuation, especially a comma before the milliseconds.
 - **Preview changes, Wallet does not:** reconnect and unlock the phone, scan its
   cards, then apply. If AirCard reports a completed write but Wallet shows old
   artwork, force-close and reopen Wallet. A completed backend write alone does

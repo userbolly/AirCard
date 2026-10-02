@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 
 enum TapCounterRenderer {
     static let canvas = CGSize(width: 1536, height: 969)
@@ -59,5 +60,32 @@ enum TapCounterRenderer {
 
     static func image(base: NSImage, counter: WalletTapCounter?) -> NSImage? {
         png(base: base, counter: counter).flatMap { NSImage(data: $0) }
+    }
+
+    // Preview-only overlay measured from Wallet screenshots (529 × 334 card).
+    // It deliberately does not participate in png(base:counter:), which is flashed.
+    static func walletNumberGuide(digits: String, color: NSColor) -> NSImage? {
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1536, pixelsHigh: 969,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        bitmap.size = canvas
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        guard let context = NSGraphicsContext.current?.cgContext else { return nil }
+        context.clear(CGRect(origin: .zero, size: canvas))
+        let sx = canvas.width / 529, sy = canvas.height / 334
+        context.setFillColor(color.cgColor)
+        for x in [32.0, 44.0, 56.0, 68.0] {
+            context.fillEllipse(in: CGRect(x: (x - 2.6) * sx, y: (334 - 300 - 2.6) * sy,
+                                          width: 5.2 * sx, height: 5.2 * sy))
+        }
+        let number = String(digits.filter { $0.isASCII && $0.isNumber }.prefix(4))
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: number.isEmpty ? "1234" : number,
+            attributes: [.font: NSFont.systemFont(ofSize: 24 * sx, weight: .medium), .foregroundColor: color]))
+        context.textMatrix = .identity
+        context.textPosition = CGPoint(x: 84 * sx, y: (334 - 307) * sy)
+        CTLineDraw(line, context)
+        return bitmap.representation(using: .png, properties: [:]).flatMap { NSImage(data: $0) }
     }
 }

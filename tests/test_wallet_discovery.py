@@ -36,3 +36,4 @@ class WalletDiscoveryTests(unittest.TestCase):
                             '-o', binary], capture_output=True, text=True, check=True)
             result = subprocess.run([binary], capture_output=True, text=True, check=True)
             self.assertIn('clear/relaunch passed', result.stdout)
+            self.assertIn('counter save/preview, new event tracking, device validation and relaunch passed', result.stdout)

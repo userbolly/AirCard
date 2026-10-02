@@ -1,9 +1,10 @@
 import Foundation
+import AppKit
 
 @main
 struct WalletViewModelTests {
     @MainActor
-    static func main() {
+    static func main() async throws {
         let suite = "AirCardWalletTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -63,5 +64,60 @@ struct WalletViewModelTests {
         precondition(relaunched.cards.first(where: { $0.id == c })?.confirmed == true)
         precondition(relaunched.currentVerifiedCards.map(\.id) == [c])
         print("Wallet view model migration, device isolation, repeat scans, skin identity and clear/relaunch passed")
+
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let skinURL = temp.appendingPathComponent("original.png")
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 160, pixelsHigh: 100,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        bitmap.size = CGSize(width: 160, height: 100)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        NSColor.blue.setFill()
+        NSBezierPath(rect: CGRect(x: 0, y: 0, width: 160, height: 100)).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        try bitmap.representation(using: .png, properties: [:])!.write(to: skinURL)
+        let counterSuite = "AirCardCounterModelTests." + UUID().uuidString
+        let counterDefaults = UserDefaults(suiteName: counterSuite)!
+        defer { counterDefaults.removePersistentDomain(forName: counterSuite) }
+        let saved = [WalletSavedCard(id: a, confirmed: true, imagePath: skinURL.path, selected: false)]
+        counterDefaults.set(try JSONEncoder().encode(saved), forKey: "mak5er.aircard.wallet.v2.counter-phone")
+        let counterStore = WalletTapCounterStore(fileURL: temp.appendingPathComponent("counts.json"))
+        let counterVM = AppViewModel(cardDefaults: counterDefaults, connectOnLaunch: false, counterStore: counterStore)
+        counterVM.activateCardDevice("counter-phone")
+        counterVM.device = DeviceInfo(udid: "counter-phone", connected: true)
+        counterVM.currentScanIDs = [a]
+        counterVM.counterInboxURL = temp.appendingPathComponent("empty-inbox.txt")
+        let restored = counterVM.cards[0]
+        let baseSignature = CardItem.signature(of: skinURL)!
+        precondition(restored.skinSignature == baseSignature)
+        counterVM.flashedSkins = ["counter-phone|" + a: baseSignature]
+        precondition(counterVM.isSkinFlashed(restored))
+        try await counterVM.saveCounter(deviceID: "counter-phone", cardID: a, name: "SoFi", enabled: true, appearance: .standard)
+        let counter = counterVM.counter(for: a)!
+        precondition(counter.count() == 0 && counterVM.counterPreviews[a] != nil)
+        precondition(!counterVM.isSkinFlashed(restored))
+        counterVM.flashedSkins["counter-phone|" + a] = counter.artworkSignature(base: baseSignature)
+        precondition(counterVM.isSkinFlashed(restored))
+        let timestamp = ISO8601DateFormatter()
+        timestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        _ = try await counterStore.ingest(counter.shortcutKey + "|" + timestamp.string(from: Date()) + "\n")
+        try await counterVM.reloadCounters()
+        precondition(counterVM.counter(for: a)!.count() == 1 && !counterVM.isSkinFlashed(restored))
+        try await counterVM.saveCounter(deviceID: "counter-phone", cardID: a, name: "SoFi", enabled: true, appearance: .standard)
+        precondition(counterVM.counter(for: a)!.count() == 1)
+        do {
+            try await counterVM.saveCounter(deviceID: "other-phone", cardID: a, name: "Wrong", enabled: true, appearance: .standard)
+            preconditionFailure("A different phone must not configure this card")
+        } catch WalletCounterError.invalidCard { }
+        let reloadedVM = AppViewModel(cardDefaults: counterDefaults, connectOnLaunch: false, counterStore: WalletTapCounterStore(fileURL: temp.appendingPathComponent("counts.json")))
+        reloadedVM.activateCardDevice("counter-phone")
+        reloadedVM.device = DeviceInfo(udid: "counter-phone", connected: true)
+        try await reloadedVM.reloadCounters()
+        precondition(reloadedVM.cards[0].skinSignature == baseSignature)
+        precondition(reloadedVM.counter(for: a)!.count() == 1 && reloadedVM.counterPreviews[a] != nil)
+        print("Restored skin signatures, counter save/preview, new event tracking, device validation and relaunch passed")
     }
 }

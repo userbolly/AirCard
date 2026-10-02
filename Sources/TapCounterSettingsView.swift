@@ -19,6 +19,9 @@ struct TapCounterSettingsView: View {
     @State private var saving = false
     @State private var error: String?
     @State private var showSetup = false
+    @State private var showWalletNumberGuide = true
+    @AppStorage private var guideDigits: String
+    @AppStorage private var guideTone: String
 
     init(vm: AppViewModel, request: CounterEditorRequest) {
         self.vm = vm; self.request = request
@@ -27,6 +30,11 @@ struct TapCounterSettingsView: View {
         _enabled = State(initialValue: counter?.enabled ?? true)
         _appearance = State(initialValue: counter?.appearance ?? .standard)
         _correction = State(initialValue: counter?.count() ?? 0)
+        let guideKey = "aircard.counter.guide." + request.id
+        let cardName = (counter?.name ?? request.card.displayName ?? "").lowercased()
+        _guideDigits = AppStorage(wrappedValue: "1234", guideKey + ".digits")
+        _guideTone = AppStorage(wrappedValue: cardName.contains("sofi") ? "Gray" : cardName.contains("chime") ? "Black" : "White",
+                               guideKey + ".tone")
     }
 
     private var draft: WalletTapCounter {
@@ -65,17 +73,41 @@ struct TapCounterSettingsView: View {
             .padding(20)
             Divider()
             HStack(alignment: .top, spacing: 0) {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     if let base = request.card.customImage,
                        let preview = TapCounterRenderer.image(base: base, counter: draft) {
                         Image(nsImage: preview).resizable().scaledToFit()
                             .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .overlay {
+                                if showWalletNumberGuide,
+                                   let guide = TapCounterRenderer.walletNumberGuide(digits: guideDigits, color: guideColor) {
+                                    Image(nsImage: guide).resizable().scaledToFit()
+                                        .accessibilityLabel("Wallet number placement guide: four dots, \(guideDigits)")
+                                }
+                            }
                             .accessibilityLabel("Card preview, \(draft.label())")
                     } else { Label("Assign the original skin first", systemImage: "photo") }
-                    Text("Live preview").font(.headline)
-                    Text("Plain text with no background. Save, then use Flash Skins to apply it to Wallet.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Text("\(vm.tapCounters[request.id]?.count() ?? 0) recorded taps this month")
+                    Text("Live preview · Plain text").font(.headline)
+                    Toggle("Show Wallet number guide", isOn: $showWalletNumberGuide)
+                    if showWalletNumberGuide {
+                        HStack {
+                            TextField("Guide digits", text: $guideDigits).frame(width: 160)
+                                .onChange(of: guideDigits) { _, value in
+                                    let filtered = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4))
+                                    if filtered != value { guideDigits = filtered }
+                                }
+                            Picker("Guide color", selection: $guideTone) {
+                                Text("Gray").tag("Gray")
+                                Text("Black").tag("Black")
+                                Text("White").tag("White")
+                            }
+                        }
+                    }
+                    Text("Matches the number position in your Wallet screenshots. Preview only; Wallet adds the real digits.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text((vm.tapCounters[request.id]?.count() ?? 0) == 1
+                         ? "1 recorded tap this month"
+                         : "\(vm.tapCounters[request.id]?.count() ?? 0) recorded taps this month")
                         .font(.callout.monospacedDigit())
                     Text("Each new month starts at zero. The image refreshes when this Mac can reach the iPhone.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -141,11 +173,11 @@ struct TapCounterSettingsView: View {
                     }
                     Section {
                         DisclosureGroup("Set up automatic counting in Shortcuts", isExpanded: $showSetup) {
-                            Text("Save this card first, then use its event template in a Wallet Transaction automation.")
+                            Text("Save this card first, then use its event template in a Wallet tap automation.")
                             if let counter = vm.tapCounters[request.id] {
                                 Button("Copy event template") {
                                     NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(counter.shortcutKey + "|[Formatted Date]", forType: .string)
+                                    NSPasteboard.general.setString(counter.shortcutKey + "|[Formatted Date]\n", forType: .string)
                                 }
                             }
                             Button("Create iCloud events folder") {
@@ -161,7 +193,7 @@ struct TapCounterSettingsView: View {
                             }
                             Text("Inbox: \(vm.counterInboxURL.path)").font(.caption).textSelection(.enabled)
                             Text(vm.counterStatus).font(.caption).foregroundStyle(.secondary)
-                            Text("1. Shortcuts → Automation → Transaction. Select this card and Run Immediately.\n2. Format the Current Date using yyyy-MM-dd'T'HH:mm:ss.SSSXXX.\n3. Add a Text action with the copied template. Replace [Formatted Date] with the date action’s output.\n4. Append that text as a new line to iCloud Drive → Shortcuts → AirCard-Taps → events.txt.")
+                            Text("1. On iOS 27, edit a shortcut, open Automation, and choose Wallet. Select this card and keep Automation on. On older iOS versions, choose Automation → Transaction → Run Immediately.\n2. Format the Current Date using yyyy-MM-dd'T'HH:mm:ss.SSSXXX.\n3. Add a Text action with the copied template. Insert the Formatted Date variable directly after the |, with no line break between them. Press Return after the variable.\n4. Append the Text output to the iCloud Drive → Shortcuts → AirCard-Taps folder. Set File Path to events.txt and enable Make New Line.\n5. In shortcut Details → Privacy, enable Allow Running When Locked.")
                                 .font(.callout).textSelection(.enabled)
                             Link("Full setup guide", destination: URL(string: "https://github.com/userbolly/AirCard/blob/feature/monthly-tap-counter/docs/monthly-counters.md")!)
                         }
@@ -179,6 +211,14 @@ struct TapCounterSettingsView: View {
 
     private var correctedCount: Binding<Int> {
         Binding(get: { correction }, set: { correction = $0; countEdited = true })
+    }
+
+    private var guideColor: NSColor {
+        switch guideTone {
+        case "Black": return .black
+        case "Gray": return NSColor(white: 0.44, alpha: 1)
+        default: return .white
+        }
     }
 
     private func color(_ key: WritableKeyPath<TapCounterAppearance, CounterColor>) -> Binding<Color> {
