@@ -32,6 +32,7 @@ class WalletDiscoveryTests(unittest.TestCase):
                             '-D', 'WALLET_TESTS', '-parse-as-library', '-target', platform.machine() + '-apple-macosx14.0',
                             str(root / 'Sources/WalletDiscovery.swift'), str(root / 'Sources/WalletDiagnosticsView.swift'),
                             str(root / 'AirCardApp.swift'), str(root / 'tests/test_wallet_viewmodel.swift'),
+                            *map(str, sorted((root / 'Sources').glob('*Counter*.swift'))),
                             '-o', binary], capture_output=True, text=True, check=True)
             result = subprocess.run([binary], capture_output=True, text=True, check=True)
             self.assertIn('clear/relaunch passed', result.stdout)

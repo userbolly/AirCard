@@ -29,6 +29,7 @@ class WalletCardBindingTests(unittest.TestCase):
                 str(source),
                 str(root / "Sources/WalletDiscovery.swift"),
                 str(root / "Sources/WalletDiagnosticsView.swift"),
+                *map(str, sorted((root / "Sources").glob("*Counter*.swift"))),
                 str(root / "tests/WalletCardBindingTests.swift"),
                 "-o", str(binary),
             ], capture_output=True, text=True)

@@ -43,9 +43,9 @@ cat << 'EOF' > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.2.5</string>
+    <string>1.3.0</string>
     <key>CFBundleVersion</key>
-    <string>10</string>
+    <string>11</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
@@ -92,8 +92,9 @@ if [ -z "${SWIFT_SDK:-}" ]; then
         SWIFT_SDK="$CLT_SWIFTUI_SDK"
     fi
 fi
-swiftc -sdk "$SWIFT_SDK" -O -parse-as-library -target arm64-apple-macosx14.0 AirCardApp.swift Sources/WalletDiscovery.swift Sources/WalletDiagnosticsView.swift -o build/AirCard_arm64
-swiftc -sdk "$SWIFT_SDK" -O -parse-as-library -target x86_64-apple-macosx14.0 AirCardApp.swift Sources/WalletDiscovery.swift Sources/WalletDiagnosticsView.swift -o build/AirCard_x86_64
+SWIFT_SOURCES=(AirCardApp.swift Sources/WalletDiscovery.swift Sources/WalletDiagnosticsView.swift Sources/TapCounterAppearance.swift Sources/WalletTapCounter.swift Sources/TapCounterRenderer.swift Sources/TapCounterSettingsView.swift)
+swiftc -sdk "$SWIFT_SDK" -O -parse-as-library -target arm64-apple-macosx14.0 "${SWIFT_SOURCES[@]}" -o build/AirCard_arm64
+swiftc -sdk "$SWIFT_SDK" -O -parse-as-library -target x86_64-apple-macosx14.0 "${SWIFT_SOURCES[@]}" -o build/AirCard_x86_64
 lipo -create -output "${MACOS_DIR}/AirCard" build/AirCard_arm64 build/AirCard_x86_64
 chmod +x "${MACOS_DIR}/AirCard"
 
@@ -129,6 +130,7 @@ else
         fi
     done
 fi
+codesign --verify --deep --strict "$APP_DIR"
 
 # The plist promise is only worth anything if the binaries agree with it. A
 # helper built without a minimum silently inherits the build machine's macOS.
@@ -142,10 +144,12 @@ for binary in "${MACOS_DIR}/${APP_NAME}" "${BIN_DIR}"/*; do
 done
 
 echo "==> [6/6] Generating styled DMG (${APP_NAME}.dmg)..."
-DMG_STAGING="/tmp/aircard_dmg_staging"
-rm -rf "$DMG_STAGING"
-mkdir -p "$DMG_STAGING"
-cp -R "$APP_DIR" "$DMG_STAGING/"
+DMG_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/aircard-dmg.XXXXXX")"
+trap 'rm -rf "$DMG_STAGING"' EXIT
+# Finder metadata added to a source checkout can invalidate a signed bundle.
+# Stage only its file data, then verify the exact app going into the image.
+ditto --norsrc --noextattr "$APP_DIR" "$DMG_STAGING/${APP_NAME}.app"
+codesign --verify --deep --strict "$DMG_STAGING/${APP_NAME}.app"
 
 rm -f "build/${APP_NAME}.dmg"
 

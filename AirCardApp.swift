@@ -589,11 +589,25 @@ class AppViewModel: ObservableObject {
     private let flashedSkinsKey = "mak5er.aircard.flashedSkins"
     /// "udid|cardHash" -> skin signature last flashed successfully.
     @Published var flashedSkins: [String: String] = [:]
+    @Published var tapCounters: [String: WalletTapCounter] = [:]
+    @Published var counterPreviews: [String: NSImage] = [:]
+    @Published var counterAutoApply = false {
+        didSet { cardDefaults.set(counterAutoApply, forKey: "aircard.counter.autoApply") }
+    }
+    @Published var counterInboxURL = WalletTapCounterStore.defaultInbox
+    @Published var counterStatus = "Waiting for Shortcuts events"
+    private let counterStore: WalletTapCounterStore
+    private var counterPreviewSignatures: [String: String] = [:]
+    private var counterTimer: Timer?
+    private var counterPollRunning = false
+    private var lastCounterAttempt = Date.distantPast
     private let legacyStorageKey1 = "mak5er.savedCards"
     private let legacyStorageKey2 = "LumiCards.savedCards"
     
-    init(cardDefaults: UserDefaults = .standard, connectOnLaunch: Bool = true) {
+    init(cardDefaults: UserDefaults = .standard, connectOnLaunch: Bool = true,
+         counterStore: WalletTapCounterStore? = nil) {
         self.cardDefaults = cardDefaults
+        self.counterStore = counterStore ?? WalletTapCounterStore()
         let cwd = FileManager.default.currentDirectoryPath
         if let resPath = Bundle.main.resourcePath, FileManager.default.fileExists(atPath: resPath + "/aircard_backend.py") {
             self.scriptDir = resPath
@@ -605,7 +619,82 @@ class AppViewModel: ObservableObject {
         
         flashedSkins = UserDefaults.standard.dictionary(forKey: flashedSkinsKey) as? [String: String] ?? [:]
         loadSavedCards()
-        if connectOnLaunch { checkDevice() }
+        counterAutoApply = cardDefaults.bool(forKey: "aircard.counter.autoApply")
+        if let inbox = cardDefaults.string(forKey: "aircard.counter.inbox") { counterInboxURL = URL(fileURLWithPath: inbox) }
+        if connectOnLaunch {
+            checkDevice()
+            pollCounterEvents()
+            counterTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.pollCounterEvents() }
+            }
+        }
+    }
+
+    func counter(for cardID: String) -> WalletTapCounter? {
+        guard let udid = device?.udid else { return nil }
+        return tapCounters[WalletTapCounter.id(deviceID: udid, cardID: cardID)]
+    }
+
+    func reloadCounters() async throws {
+        let loaded = try await counterStore.records()
+        tapCounters = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0) })
+        var previews: [String: NSImage] = [:], signatures: [String: String] = [:]
+        for card in cards {
+            guard let counter = counter(for: card.id), counter.enabled,
+                  let base = card.customImage, let baseSignature = card.skinSignature else { continue }
+            let signature = counter.artworkSignature(base: baseSignature)
+            previews[card.id] = counterPreviewSignatures[card.id] == signature
+                ? counterPreviews[card.id] : TapCounterRenderer.image(base: base, counter: counter)
+            signatures[card.id] = signature
+        }
+        counterPreviews = previews
+        counterPreviewSignatures = signatures
+    }
+
+    func pollCounterEvents() {
+        guard !counterPollRunning else { return }
+        counterPollRunning = true
+        Task {
+            defer { counterPollRunning = false }
+            do {
+                let imported = try await counterStore.importInbox(counterInboxURL)
+                try await reloadCounters()
+                counterStatus = imported > 0 ? "Imported \(imported) tap event(s)"
+                    : FileManager.default.fileExists(atPath: counterInboxURL.path)
+                        ? "Watching Shortcuts events" : "Create the events file in counter setup"
+                guard counterAutoApply, !isFlashing, !isScanningCards, device?.connected == true,
+                      Date().timeIntervalSince(lastCounterAttempt) >= 60 else { return }
+                let pending = currentVerifiedCards.filter {
+                    counter(for: $0.id) != nil && $0.customImageURL != nil && !isSkinFlashed($0)
+                }
+                if !pending.isEmpty {
+                    lastCounterAttempt = Date()
+                    applySkin(cardIDs: Set(pending.map(\.id)), automatic: true)
+                }
+            } catch {
+                counterStatus = "Could not read counter events: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func saveCounter(deviceID: String, cardID: String, name: String, enabled: Bool,
+                     appearance: TapCounterAppearance, count: Int? = nil) async throws {
+        guard device?.udid == deviceID, currentVerifiedCardIDs.contains(cardID) else { throw WalletCounterError.invalidCard }
+        if enabled && !cards.contains(where: { $0.id == cardID && $0.customImage != nil }) { throw WalletCounterError.missingArtwork }
+        _ = try await counterStore.configure(deviceID: deviceID, cardID: cardID, name: name,
+                                             enabled: enabled, appearance: appearance, count: count)
+        try await reloadCounters()
+        lastCounterAttempt = .distantPast
+        pollCounterEvents()
+    }
+
+    func chooseCounterInbox(_ folder: URL) throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("events.txt")
+        if !FileManager.default.fileExists(atPath: file.path) { try Data().write(to: file, options: .atomic) }
+        counterInboxURL = file
+        cardDefaults.set(file.path, forKey: "aircard.counter.inbox")
+        pollCounterEvents()
     }
     
     func log(_ message: String) {
@@ -924,12 +1013,14 @@ class AppViewModel: ObservableObject {
     }
     
     func deleteCard(id: String) {
+        disableCounter(for: id)
         cards.removeAll { $0.id == id }
         saveCards()
         log("Removed card: \(id)")
     }
     
     func clearAllCards() {
+        for card in cards { disableCounter(for: card.id) }
         cards.removeAll()
         saveCards()
         log("Cleared all cards.")
@@ -945,10 +1036,21 @@ class AppViewModel: ObservableObject {
     }
     
     func clearCardImage(for cardId: String) {
+        disableCounter(for: cardId)
         if let idx = cards.firstIndex(where: { $0.id == cardId }) {
             cards[idx].customImageURL = nil
             cards[idx].customImage = nil
             log("Cleared custom skin for: \(cardId.prefix(12))...")
+        }
+    }
+
+    private func disableCounter(for id: String) {
+        guard let udid = device?.udid else { return }
+        Task {
+            do {
+                try await counterStore.disable(deviceID: udid, cardID: id)
+                try await reloadCounters()
+            } catch { counterStatus = error.localizedDescription }
         }
     }
     
@@ -957,7 +1059,7 @@ class AppViewModel: ObservableObject {
     /// True when the card's current skin is already on the connected device.
     func isSkinFlashed(_ card: CardItem) -> Bool {
         guard let udid = device?.udid, let sig = card.skinSignature else { return false }
-        return flashedSkins[flashedKey(udid: udid, cardId: card.id)] == sig
+        return flashedSkins[flashedKey(udid: udid, cardId: card.id)] == (counter(for: card.id)?.artworkSignature(base: sig) ?? sig)
     }
     
     /// Selected cards with a skin that differs from what was last flashed.
@@ -965,8 +1067,8 @@ class AppViewModel: ObservableObject {
         cards.filter { $0.isSelected && $0.customImageURL != nil && !isSkinFlashed($0) }
     }
     
-    private func markSkinFlashed(udid: String, card: CardItem) {
-        guard let sig = card.skinSignature else { return }
+    private func markSkinFlashed(udid: String, card: CardItem, signature: String?) {
+        guard let sig = signature else { return }
         flashedSkins[flashedKey(udid: udid, cardId: card.id)] = sig
         UserDefaults.standard.set(flashedSkins, forKey: flashedSkinsKey)
     }
@@ -1340,19 +1442,21 @@ class AppViewModel: ObservableObject {
     
     // MARK: - Skin Application
     
-    func applySkin() {
+    func applySkin(cardIDs: Set<String>? = nil, automatic: Bool = false) {
+        guard !isFlashing else { return }
         guard let udid = device?.udid else {
             errorMessage = "No iPhone connected."
             return
         }
         let verifiedIDs = currentVerifiedCardIDs
-        let allSkinned = cards.filter { verifiedIDs.contains($0.id) && $0.isSelected && $0.customImageURL != nil }
+        let allSkinned = cards.filter { verifiedIDs.contains($0.id) && ($0.isSelected || automatic || cardIDs != nil) &&
+            $0.customImageURL != nil && (cardIDs?.contains($0.id) ?? true) }
         guard !allSkinned.isEmpty else {
             errorMessage = "Please assign a skin image to at least one selected card."
             return
         }
         // Only flash changed skins; if nothing changed, re-flash everything selected.
-        let changed = cardsNeedingFlash.filter { verifiedIDs.contains($0.id) }
+        let changed = allSkinned.filter { !isSkinFlashed($0) }
         let selectedCardsWithSkin = changed.isEmpty ? allSkinned : changed
         
         isFlashing = true
@@ -1364,12 +1468,16 @@ class AppViewModel: ObservableObject {
             log("Starting skin application for \(changed.count) changed card(s); skipping \(allSkinned.count - changed.count) already flashed.")
         }
         let scriptDir = self.scriptDir
+        let counters = tapCounters
+        let renderDate = Date()
         
         Task.detached {
             var flashFailed = false
             let totalCards = Double(selectedCardsWithSkin.count)
             for (idx, card) in selectedCardsWithSkin.enumerated() {
                 guard let imgURL = card.customImageURL else { continue }
+                let counter = counters[WalletTapCounter.id(deviceID: udid, cardID: card.id)]
+                let signature = card.skinSignature.map { counter?.artworkSignature(base: $0, at: renderDate) ?? $0 }
                 
                 // A fresh directory per run. The old fixed /tmp path was shared
                 // between runs, so a card whose artwork failed to prepare would
@@ -1388,8 +1496,21 @@ class AppViewModel: ObservableObject {
                 }
                 
                 // 1. Prepare image natively in Swift (0 external dependencies!)
-                let prepped = AppViewModel.prepareCardImage(srcURL: imgURL, dstURL: preparedURL)
+                var prepped = false
+                if let counter, counter.enabled, let base = NSImage(contentsOf: imgURL),
+                   let png = TapCounterRenderer.png(base: base, counter: counter, at: renderDate) {
+                    do { try png.write(to: preparedURL, options: .atomic); prepped = true } catch { }
+                } else if counter?.enabled != true {
+                    prepped = AppViewModel.prepareCardImage(srcURL: imgURL, dstURL: preparedURL)
+                }
                 if !prepped {
+                    // A failed counter render must stay pending, not apply an uncounted skin.
+                    if counter?.enabled == true {
+                        flashFailed = true
+                        if let counter { try? await self.counterStore.markFailed(id: counter.id, message: "The counter image could not be prepared. Choose the original skin again, then retry.") }
+                        await MainActor.run { self.log("Counter image preparation failed; the original skin was not overwritten.") }
+                        break
+                    }
                     let prepProcess = Process()
                     prepProcess.executableURL = AppViewModel.pythonExecutableURL
                     prepProcess.environment = AppViewModel.processEnvironment
@@ -1501,14 +1622,16 @@ class AppViewModel: ObservableObject {
 
                 if flashProcess.terminationStatus != 0 {
                     flashFailed = true
+                    if let counter { try? await self.counterStore.markFailed(id: counter.id, message: "The artwork write failed. Reconnect and unlock the iPhone, then retry Flash Skins.") }
                     await MainActor.run {
                         self.log("Card update failed for \(card.id.prefix(12))...")
                     }
                     break
                 }
                 
+                if let counter { try? await self.counterStore.markApplied(counter, month: WalletTapCounter.month(at: renderDate)) }
                 await MainActor.run {
-                    self.markSkinFlashed(udid: udid, card: card)
+                    self.markSkinFlashed(udid: udid, card: card, signature: signature)
                     self.progress = Double(idx + 1) / totalCards
                 }
             }
@@ -1522,10 +1645,11 @@ class AppViewModel: ObservableObject {
                     self.log("Skin application stopped after a card update failed.")
                 } else {
                     self.statusText = "Complete! All cards updated."
-                    self.showSuccessAlert = true
+                    self.showSuccessAlert = !automatic
                     self.log("Skins successfully applied to all selected cards!")
                 }
             }
+            try? await self.reloadCounters()
         }
     }
     
@@ -1852,6 +1976,9 @@ struct WalletCardView: View {
     @Binding var card: CardItem
     let cardIndex: Int
     var isFlashed: Bool = false
+    var counter: WalletTapCounter? = nil
+    var counterPreview: NSImage? = nil
+    var onConfigureCounter: () -> Void = {}
     let onPickImage: () -> Void
     let onClearImage: () -> Void
     let onDelete: () -> Void
@@ -1865,7 +1992,7 @@ struct WalletCardView: View {
         VStack(spacing: 10) {
             // Card Mockup
             ZStack {
-                if let img = card.customImage {
+                if let img = counterPreview ?? card.customImage {
                     // Custom Skin Applied
                     ZStack(alignment: .topTrailing) {
                         Image(nsImage: img)
@@ -2085,6 +2212,17 @@ struct WalletCardView: View {
                 .help("Remove from list")
             }
             .padding(.horizontal, 4)
+            Button(action: onConfigureCounter) {
+                HStack {
+                    Image(systemName: "number.circle")
+                    Text(counter.flatMap { $0.enabled ? $0.label() : nil } ?? "Monthly tap counter")
+                        .font(.caption).lineLimit(1)
+                    Spacer()
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .frame(minHeight: 28)
+            }
+            .buttonStyle(.plain).help("Edit the counter and set up Shortcuts")
         }
         .padding(10)
         .background(
@@ -2165,6 +2303,7 @@ struct ContentView: View {
     @State private var dragKeyStartOffsets: [String: CGPoint] = [:]
     @State private var isTargetedPoster = false
     @State private var isTargetedTheme = false
+    @State private var counterEditor: CounterEditorRequest?
     
     private var readyToFlashCount: Int {
         vm.currentVerifiedCards.filter { $0.isSelected && $0.customImageURL != nil }.count
@@ -2226,6 +2365,11 @@ struct ContentView: View {
                                     card: walletCardBinding(in: $vm.cards, snapshot: verifiedCard),
                                     cardIndex: visibleIndex,
                                     isFlashed: vm.isSkinFlashed(verifiedCard),
+                                    counter: vm.counter(for: cardID),
+                                    counterPreview: vm.counterPreviews[cardID],
+                                    onConfigureCounter: {
+                                        if let deviceID { counterEditor = CounterEditorRequest(deviceID: deviceID, card: verifiedCard) }
+                                    },
                                     onPickImage: { openCardImagePicker(for: cardID) },
                                     onClearImage: { vm.clearCardImage(for: cardID) },
                                     onDelete: { vm.deleteCard(id: cardID) },
@@ -2288,6 +2432,7 @@ struct ContentView: View {
         .sheet(isPresented: $vm.showAddCardSheet) {
             addCardSheet
         }
+        .sheet(item: $counterEditor) { request in TapCounterSettingsView(vm: vm, request: request) }
         .onAppear {
             if !dontShowSupportOnLaunch {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -2318,7 +2463,7 @@ struct ContentView: View {
                     Text("AirCard")
                         .font(.title2)
                         .fontWeight(.bold)
-                    Text("v1.2.5")
+                    Text("v1.3.0 · Monthly counters")
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)

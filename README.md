@@ -10,8 +10,14 @@
 
 ---
 
+This fork adds **monthly tap counters to the existing Mac app**. Your iPhone uses
+Apple's built-in Shortcuts Transaction automation to record taps in iCloud Drive;
+AirCard reads them and updates card artwork when the phone is connected. No
+separate iPhone app is needed. See the [counter setup guide](docs/monthly-counters.md).
+
 ## Features
 - 🎨 **Custom Card Skins:** Assign custom artwork, textures, or bank logos to Apple Pay and Wallet cards.
+- 🔢 **Monthly Tap Counters:** Per-card counts, automatic monthly rollover, plain text overlays, and configurable fonts, colors, placement, shadows, outlines, and label formats. Optional automatic flashing while the Mac is open and the iPhone is connected and verified.
 - 🔢 **Lock Screen Passcode Themes (.passthm):** Apply custom keypad button artwork from popular `.passthm` themes directly to iOS 18+ lockscreen.
 - 🧩 **Passcode Theme Creator:** Create custom themes from a single wallpaper (Seamless Poster Slicing) or build key-by-key (Individual Keys).
 - 🔍 **Interactive Photo Framing:** Pan and zoom artwork directly inside keypad buttons with real-time iPhone preview.
@@ -37,6 +43,10 @@ Wallet setup, detailed troubleshooting, multi-card workflows, theme creation, co
 ## Installation
 
 ### macOS (Universal DMG)
+For this fork's monthly counters, build the `feature/monthly-tap-counter` branch
+with `./build.sh` and install `build/AirCard.app`. The upstream release below
+contains the original customization app.
+
 1. Download **`AirCard.dmg`** from [Releases](https://github.com/mak5er/AirCard/releases).
 2. Open `AirCard.dmg` and drag **`AirCard.app`** into your **Applications** folder.
 3. Fully compatible with both **Apple Silicon** and **Intel (x86)** Macs.
